@@ -14,7 +14,7 @@ pub const Config = struct {
     api_key: []const u8,
     service_name: []const u8,
     ingest_url: []const u8 = "https://ingest.imprint.cloud/v1/spans",
-    batch_size: usize = 100,
+    batch_size: usize = 1, // Send immediately by default
     flush_interval_ms: u64 = 5000,
 };
 
