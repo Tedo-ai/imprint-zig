@@ -26,7 +26,7 @@ pub const Span = struct {
     namespace: []const u8,
     name: []const u8,
     kind: []const u8 = "internal",
-    start_time: i64, // Unix timestamp nanoseconds
+    start_time: i128, // Unix timestamp nanoseconds
     duration_ns: u64 = 0,
     status_code: u16 = 0,
     error_data: ?[]const u8 = null,
@@ -268,23 +268,23 @@ pub const Client = struct {
         var auth_buf: [256]u8 = undefined;
         const auth_header = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{self.config.api_key}) catch return error.BufferTooSmall;
 
-        // Make request
-        var req = try client.request(.POST, uri, .{
+        // Use fetch API (Zig 0.13+)
+        var response_body = std.ArrayList(u8).init(self.allocator);
+        defer response_body.deinit();
+
+        const result = try client.fetch(.{
+            .location = .{ .uri = uri },
+            .method = .POST,
+            .payload = payload,
             .extra_headers = &[_]http.Header{
                 .{ .name = "Content-Type", .value = "application/json" },
                 .{ .name = "Authorization", .value = auth_header },
             },
-        }, .{});
-        defer req.deinit();
+            .response_storage = .{ .dynamic = &response_body },
+        });
 
-        req.transfer_encoding = .{ .content_length = payload.len };
-        try req.send();
-        try req.writeAll(payload);
-        try req.finish();
-        try req.wait();
-
-        if (req.status != .ok and req.status != .created and req.status != .accepted) {
-            log.warn("Ingest returned status: {}", .{req.status});
+        if (result.status != .ok and result.status != .created and result.status != .accepted) {
+            log.warn("Ingest returned status: {}", .{result.status});
             return error.IngestError;
         }
 
