@@ -1,0 +1,14 @@
+# Zig build artifacts
+zig-out/
+zig-cache/
+.zig-cache/
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
