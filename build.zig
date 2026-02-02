@@ -7,7 +7,7 @@ pub fn build(b: *std.Build) void {
     // Library module
     const lib = b.addStaticLibrary(.{
         .name = "imprint",
-        .root_source_file = .{ .path = "src/imprint.zig" },
+        .root_source_file = b.path("src/imprint.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -16,12 +16,12 @@ pub fn build(b: *std.Build) void {
 
     // Module for dependency usage
     _ = b.addModule("imprint", .{
-        .source_file = .{ .path = "src/imprint.zig" },
+        .root_source_file = b.path("src/imprint.zig"),
     });
 
     // Unit tests
     const lib_unit_tests = b.addTest(.{
-        .root_source_file = .{ .path = "src/imprint.zig" },
+        .root_source_file = b.path("src/imprint.zig"),
         .target = target,
         .optimize = optimize,
     });
