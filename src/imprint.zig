@@ -14,8 +14,8 @@ pub const Config = struct {
     api_key: []const u8,
     service_name: []const u8,
     ingest_url: []const u8 = "https://ingest.imprint.cloud/v1/spans",
-    batch_size: usize = 1, // Send immediately by default
-    flush_interval_ms: u64 = 5000,
+    batch_size: usize = 100,
+    flush_interval_ms: u64 = 5000, // Auto-flush after this many ms
 };
 
 /// A single operation within a trace.
@@ -178,6 +178,7 @@ pub const Client = struct {
     config: Config,
     buffer: std.ArrayList(*Span),
     mutex: std.Thread.Mutex,
+    last_flush_time: i64, // milliseconds since epoch
 
     const Self = @This();
 
@@ -187,6 +188,7 @@ pub const Client = struct {
             .config = config,
             .buffer = std.ArrayList(*Span).init(allocator),
             .mutex = .{},
+            .last_flush_time = std.time.milliTimestamp(),
         };
     }
 
@@ -219,8 +221,15 @@ pub const Client = struct {
 
         try self.buffer.append(span);
 
-        if (self.buffer.items.len >= self.config.batch_size) {
+        const now = std.time.milliTimestamp();
+        const time_since_flush: u64 = @intCast(@max(0, now - self.last_flush_time));
+
+        // Flush if batch size reached OR flush interval elapsed
+        if (self.buffer.items.len >= self.config.batch_size or
+            time_since_flush >= self.config.flush_interval_ms)
+        {
             try self.flushLocked();
+            self.last_flush_time = now;
         }
     }
 
