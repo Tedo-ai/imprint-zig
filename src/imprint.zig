@@ -196,8 +196,8 @@ pub const Client = struct {
         // Flush remaining spans
         self.flush() catch {};
         // Free any remaining serialized spans
-        for (self.buffer.items) |json| {
-            self.allocator.free(json);
+        for (self.buffer.items) |span_data| {
+            self.allocator.free(span_data);
         }
         self.buffer.deinit();
     }
@@ -269,8 +269,8 @@ pub const Client = struct {
         };
 
         // Free serialized JSON and clear buffer
-        for (self.buffer.items) |json| {
-            self.allocator.free(json);
+        for (self.buffer.items) |span_data| {
+            self.allocator.free(span_data);
         }
         self.buffer.clearRetainingCapacity();
     }
