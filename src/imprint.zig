@@ -176,7 +176,7 @@ pub const Span = struct {
 pub const Client = struct {
     allocator: std.mem.Allocator,
     config: Config,
-    buffer: std.ArrayList(*Span),
+    buffer: std.ArrayList([]u8), // Store serialized JSON, not pointers
     mutex: std.Thread.Mutex,
     last_flush_time: i64, // milliseconds since epoch
 
@@ -186,7 +186,7 @@ pub const Client = struct {
         return Self{
             .allocator = allocator,
             .config = config,
-            .buffer = std.ArrayList(*Span).init(allocator),
+            .buffer = std.ArrayList([]u8).init(allocator),
             .mutex = .{},
             .last_flush_time = std.time.milliTimestamp(),
         };
@@ -195,6 +195,10 @@ pub const Client = struct {
     pub fn deinit(self: *Self) void {
         // Flush remaining spans
         self.flush() catch {};
+        // Free any remaining serialized spans
+        for (self.buffer.items) |json| {
+            self.allocator.free(json);
+        }
         self.buffer.deinit();
     }
 
@@ -216,10 +220,13 @@ pub const Client = struct {
 
     /// Record a completed span.
     pub fn recordSpan(self: *Self, span: *Span) !void {
+        // Serialize span immediately to avoid use-after-free
+        const span_json = try span.toJson(self.allocator);
+
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        try self.buffer.append(span);
+        try self.buffer.append(span_json);
 
         const now = std.time.milliTimestamp();
         const time_since_flush: u64 = @intCast(@max(0, now - self.last_flush_time));
@@ -243,29 +250,32 @@ pub const Client = struct {
     fn flushLocked(self: *Self) !void {
         if (self.buffer.items.len == 0) return;
 
-        // Build JSON array
+        const span_count = self.buffer.items.len;
+
+        // Build JSON array from pre-serialized spans
         var payload = std.ArrayList(u8).init(self.allocator);
         defer payload.deinit();
 
         try payload.append('[');
-        for (self.buffer.items, 0..) |span, i| {
+        for (self.buffer.items, 0..) |span_json, i| {
             if (i > 0) try payload.append(',');
-            const span_json = try span.toJson(self.allocator);
-            defer self.allocator.free(span_json);
             try payload.appendSlice(span_json);
         }
         try payload.append(']');
 
         // Send to ingest
-        self.sendBatch(payload.items) catch |err| {
+        self.sendBatch(payload.items, span_count) catch |err| {
             log.err("Failed to send spans: {}", .{err});
         };
 
-        // Clear buffer (spans are owned by caller)
+        // Free serialized JSON and clear buffer
+        for (self.buffer.items) |json| {
+            self.allocator.free(json);
+        }
         self.buffer.clearRetainingCapacity();
     }
 
-    fn sendBatch(self: *Self, payload: []const u8) !void {
+    fn sendBatch(self: *Self, payload: []const u8, span_count: usize) !void {
         // Parse URL
         const uri = try std.Uri.parse(self.config.ingest_url);
 
@@ -297,7 +307,7 @@ pub const Client = struct {
             return error.IngestError;
         }
 
-        log.info("Sent batch of {d} spans", .{self.buffer.items.len});
+        log.info("Sent batch of {d} spans", .{span_count});
     }
 };
 
