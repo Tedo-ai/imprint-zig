@@ -179,3 +179,14 @@ zig build test
 ## License
 
 MIT
+
+## Async Export Rule
+
+Imprint SDKs **must not perform HTTP on the caller (request) thread**. Recording
+a span/log/metric is a non-blocking enqueue; reaching `batch_size` signals the
+background worker, which owns all export I/O. Buffer overflow drops (backpressure).
+Synchronous flush is only allowed at shutdown.
+
+**This SDK:** ❌ must fix — recordSpan currently flushes inline while holding the buffer mutex; move export off the caller / out of the lock.
+
+Full rule + runtime-specific guidance: `imprint-internal/docs/sdk-async-export-rule.md`.
