@@ -311,13 +311,19 @@ pub const Client = struct {
     }
 };
 
+/// Parent identifiers extracted from a W3C traceparent header.
+pub const TraceContext = struct {
+    trace_id: [32]u8,
+    span_id: [16]u8,
+};
+
 /// Parse W3C traceparent header.
-pub fn parseTraceparent(header: []const u8) ?struct { trace_id: [32]u8, span_id: [16]u8 } {
+pub fn parseTraceparent(header: []const u8) ?TraceContext {
     if (header.len != 55) return null;
     if (!std.mem.startsWith(u8, header, "00-")) return null;
     if (header[35] != '-' or header[52] != '-') return null;
 
-    var result: struct { trace_id: [32]u8, span_id: [16]u8 } = undefined;
+    var result: TraceContext = undefined;
     @memcpy(&result.trace_id, header[3..35]);
     @memcpy(&result.span_id, header[36..52]);
 
