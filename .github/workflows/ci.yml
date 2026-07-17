@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  zig:
+    name: Zig 0.13 contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install reviewed Zig toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig_root="$(bash scripts/install-ci-zig.sh "$RUNNER_TEMP/zig-0.13.0")"
+          echo "$zig_root" >> "$GITHUB_PATH"
+
+      - name: Verify format, contract tests, and production target
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig fmt --check build.zig src
+          zig build test
+          zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-linux

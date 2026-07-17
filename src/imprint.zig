@@ -6,7 +6,7 @@ const log = std.log.scoped(.imprint);
 
 // SDK metadata
 pub const sdk_name = "imprint-zig";
-pub const sdk_version = "0.1.0";
+pub const sdk_version = "0.1.1";
 pub const sdk_language = "zig";
 
 /// Configuration for the Imprint client.
@@ -82,7 +82,11 @@ pub const Span = struct {
 
     pub fn end(self: *Self) void {
         const end_time = std.time.nanoTimestamp();
-        self.duration_ns = @intCast(@as(u64, @intCast(end_time - self.start_time)));
+        const elapsed = end_time - self.start_time;
+        self.duration_ns = if (elapsed > 0 and elapsed <= std.math.maxInt(u64))
+            @intCast(elapsed)
+        else
+            0;
     }
 
     /// Returns W3C traceparent header value.
@@ -97,73 +101,55 @@ pub const Span = struct {
         var list = std.ArrayList(u8).init(allocator);
         errdefer list.deinit();
 
-        try list.appendSlice("{");
+        try list.appendSlice("{\"trace_id\":");
+        try appendJsonString(&list, self.trace_id[0..]);
+        try list.appendSlice(",\"span_id\":");
+        try appendJsonString(&list, self.span_id[0..]);
 
-        // Required fields
-        try list.appendSlice("\"trace_id\":\"");
-        try list.appendSlice(&self.trace_id);
-        try list.appendSlice("\",\"span_id\":\"");
-        try list.appendSlice(&self.span_id);
-        try list.appendSlice("\"");
-
-        // Parent ID
         if (self.parent_id) |pid| {
-            try list.appendSlice(",\"parent_id\":\"");
-            try list.appendSlice(&pid);
-            try list.appendSlice("\"");
+            try list.appendSlice(",\"parent_id\":");
+            try appendJsonString(&list, pid[0..]);
         }
 
-        // String fields
-        try list.appendSlice(",\"namespace\":\"");
-        try list.appendSlice(self.namespace);
-        try list.appendSlice("\",\"name\":\"");
-        try list.appendSlice(self.name);
-        try list.appendSlice("\",\"kind\":\"");
-        try list.appendSlice(self.kind);
-        try list.appendSlice("\"");
-
-        // Numeric fields
-        var num_buf: [32]u8 = undefined;
+        try list.appendSlice(",\"namespace\":");
+        try appendJsonString(&list, self.namespace);
+        try list.appendSlice(",\"name\":");
+        try appendJsonString(&list, self.name);
+        try list.appendSlice(",\"kind\":");
+        try appendJsonString(&list, self.kind);
 
         try list.appendSlice(",\"start_time\":");
-        const start_str = std.fmt.bufPrint(&num_buf, "{d}", .{self.start_time}) catch "0";
-        try list.appendSlice(start_str);
+        try appendRfc3339Nano(&list, self.start_time);
+        try list.writer().print(
+            ",\"duration_ns\":{d},\"status_code\":{d}",
+            .{ self.duration_ns, self.status_code },
+        );
 
-        try list.appendSlice(",\"duration_ns\":");
-        const dur_str = std.fmt.bufPrint(&num_buf, "{d}", .{self.duration_ns}) catch "0";
-        try list.appendSlice(dur_str);
-
-        try list.appendSlice(",\"status_code\":");
-        const status_str = std.fmt.bufPrint(&num_buf, "{d}", .{self.status_code}) catch "0";
-        try list.appendSlice(status_str);
-
-        // Error data
         if (self.error_data) |err| {
-            try list.appendSlice(",\"error_data\":\"");
-            try list.appendSlice(err);
-            try list.appendSlice("\"");
+            try list.appendSlice(",\"error_data\":");
+            try appendJsonString(&list, err);
         }
 
-        // Attributes
         try list.appendSlice(",\"attributes\":{");
+        try appendJsonString(&list, "telemetry.sdk.name");
+        try list.append(':');
+        try appendJsonString(&list, sdk_name);
+        try list.append(',');
+        try appendJsonString(&list, "telemetry.sdk.version");
+        try list.append(':');
+        try appendJsonString(&list, sdk_version);
+        try list.append(',');
+        try appendJsonString(&list, "telemetry.sdk.language");
+        try list.append(':');
+        try appendJsonString(&list, sdk_language);
 
-        // SDK attributes
-        try list.appendSlice("\"telemetry.sdk.name\":\"");
-        try list.appendSlice(sdk_name);
-        try list.appendSlice("\",\"telemetry.sdk.version\":\"");
-        try list.appendSlice(sdk_version);
-        try list.appendSlice("\",\"telemetry.sdk.language\":\"");
-        try list.appendSlice(sdk_language);
-        try list.appendSlice("\"");
-
-        // User attributes
         var attr_iter = self.attributes.iterator();
         while (attr_iter.next()) |entry| {
-            try list.appendSlice(",\"");
-            try list.appendSlice(entry.key_ptr.*);
-            try list.appendSlice("\":\"");
-            try list.appendSlice(entry.value_ptr.*);
-            try list.appendSlice("\"");
+            if (isSdkAttribute(entry.key_ptr.*)) continue;
+            try list.append(',');
+            try appendJsonString(&list, entry.key_ptr.*);
+            try list.append(':');
+            try appendJsonString(&list, entry.value_ptr.*);
         }
 
         try list.appendSlice("}}");
@@ -171,6 +157,73 @@ pub const Span = struct {
         return list.toOwnedSlice();
     }
 };
+
+fn appendJsonString(list: *std.ArrayList(u8), value: []const u8) !void {
+    try json.stringify(value, .{}, list.writer());
+}
+
+fn isSdkAttribute(key: []const u8) bool {
+    return std.mem.eql(u8, key, "telemetry.sdk.name") or
+        std.mem.eql(u8, key, "telemetry.sdk.version") or
+        std.mem.eql(u8, key, "telemetry.sdk.language");
+}
+
+fn appendRfc3339Nano(list: *std.ArrayList(u8), unix_nanoseconds: i128) !void {
+    if (unix_nanoseconds < 0) return error.TimestampOutOfRange;
+
+    const nanoseconds_per_second: i128 = std.time.ns_per_s;
+    const seconds_wide = @divFloor(unix_nanoseconds, nanoseconds_per_second);
+    if (seconds_wide > std.math.maxInt(i64)) return error.TimestampOutOfRange;
+
+    const seconds: i64 = @intCast(seconds_wide);
+    const nanoseconds: u32 = @intCast(@mod(unix_nanoseconds, nanoseconds_per_second));
+    const days = @divFloor(seconds, std.time.s_per_day);
+    const second_of_day: u32 = @intCast(@mod(seconds, std.time.s_per_day));
+    const date = civilDateFromUnixDays(days);
+    if (date.year < 0 or date.year > 9999) return error.TimestampOutOfRange;
+
+    const year: u32 = @intCast(date.year);
+    const hour = second_of_day / std.time.s_per_hour;
+    const minute = (second_of_day % std.time.s_per_hour) / std.time.s_per_min;
+    const second = second_of_day % std.time.s_per_min;
+    try list.writer().print(
+        "\"{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}.{d:0>9}Z\"",
+        .{ year, date.month, date.day, hour, minute, second, nanoseconds },
+    );
+}
+
+const CivilDate = struct {
+    year: i64,
+    month: u32,
+    day: u32,
+};
+
+// Howard Hinnant's civil-from-days algorithm. The input is days since the
+// Unix epoch and the output is the corresponding proleptic Gregorian date.
+fn civilDateFromUnixDays(unix_days: i64) CivilDate {
+    const shifted = unix_days + 719_468;
+    const era = @divFloor(shifted, 146_097);
+    const day_of_era = shifted - era * 146_097;
+    const year_of_era = @divFloor(
+        day_of_era - @divFloor(day_of_era, 1_460) +
+            @divFloor(day_of_era, 36_524) -
+            @divFloor(day_of_era, 146_096),
+        365,
+    );
+    var year = year_of_era + era * 400;
+    const day_of_year = day_of_era -
+        (365 * year_of_era + @divFloor(year_of_era, 4) - @divFloor(year_of_era, 100));
+    const month_prime = @divFloor(5 * day_of_year + 2, 153);
+    const day = day_of_year - @divFloor(153 * month_prime + 2, 5) + 1;
+    const month = month_prime + if (month_prime < 10) @as(i64, 3) else -9;
+    year += if (month <= 2) 1 else 0;
+
+    return .{
+        .year = year,
+        .month = @intCast(month),
+        .day = @intCast(day),
+    };
+}
 
 /// Imprint client for sending spans.
 pub const Client = struct {
@@ -395,4 +448,66 @@ test "span toJson" {
     try std.testing.expect(std.mem.indexOf(u8, json_output, "\"name\":\"test-span\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json_output, "\"kind\":\"server\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json_output, "\"telemetry.sdk.name\":\"imprint-zig\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_output, "\"start_time\":\"") != null);
+}
+
+test "span JSON matches the v1 timestamp and escaping contract" {
+    const allocator = std.testing.allocator;
+
+    var span = Span.init(allocator, "worker\"service", "artifact\ntrace");
+    defer span.deinit();
+    span.start_time = 951_782_400_123_456_789;
+    span.duration_ns = 42;
+    span.recordError("bad\tinput");
+    try span.setAttribute("quoted\"key", "line\nvalue");
+    try span.setAttribute("telemetry.sdk.version", "spoofed");
+
+    const json_output = try span.toJson(allocator);
+    defer allocator.free(json_output);
+
+    const Parsed = struct {
+        start_time: []const u8,
+        namespace: []const u8,
+        name: []const u8,
+        error_data: []const u8,
+        duration_ns: u64,
+        attributes: std.json.ArrayHashMap([]const u8),
+    };
+    const parsed = try json.parseFromSlice(Parsed, allocator, json_output, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    try std.testing.expectEqualStrings(
+        "2000-02-29T00:00:00.123456789Z",
+        parsed.value.start_time,
+    );
+    try std.testing.expectEqualStrings("worker\"service", parsed.value.namespace);
+    try std.testing.expectEqualStrings("artifact\ntrace", parsed.value.name);
+    try std.testing.expectEqualStrings("bad\tinput", parsed.value.error_data);
+    try std.testing.expectEqual(@as(u64, 42), parsed.value.duration_ns);
+    try std.testing.expectEqualStrings(
+        "line\nvalue",
+        parsed.value.attributes.map.get("quoted\"key").?,
+    );
+    try std.testing.expectEqualStrings(
+        sdk_version,
+        parsed.value.attributes.map.get("telemetry.sdk.version").?,
+    );
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        std.mem.count(u8, json_output, "\"telemetry.sdk.version\""),
+    );
+}
+
+test "RFC3339 conversion covers the Unix epoch" {
+    const allocator = std.testing.allocator;
+    var output = std.ArrayList(u8).init(allocator);
+    defer output.deinit();
+
+    try appendRfc3339Nano(&output, 0);
+    try std.testing.expectEqualStrings(
+        "\"1970-01-01T00:00:00.000000000Z\"",
+        output.items,
+    );
 }
